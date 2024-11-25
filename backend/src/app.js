@@ -1,261 +1,193 @@
+// app.js
+
+// ----------------------- Importing Required Modules -----------------------
 import dotenv from 'dotenv';
 import express from 'express';
 import mongoose from 'mongoose';
 import session from 'express-session';
 import passport from 'passport';
-import passportLocalMongoose from 'passport-local-mongoose';
+import passportLocal from 'passport-local';
 import MongoStore from 'connect-mongo';
-import rateLimit from express-rate-limit;
+import rateLimit from 'express-rate-limit';
 import helmet from 'helmet';
+import path from 'path';
+import { fileURLToPath } from 'url';
 
+// ----------------------- Configuration Setup -----------------------
 
-
-// Load environment variables
+// Load environment variables from .env file
 dotenv.config();
 
 // Initialize Express app
 const app = express();
+
+// Define the port to run the server on
 const PORT = process.env.PORT || 3000;
 
-// Middleware
-const apiLimiter = rateLimit({
-  windowMs: 1000 * 60 * 15, // 15 minutes
-  max:100,
-  message: "too many requests from this IP, please try again later." 
-})
+// For __dirname in ES Modules
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
-app.use(apiLimiter);
-app.use(express.json());
+// ----------------------- Security Middlewares -----------------------
+
+// Set various HTTP headers for app security
 app.use(helmet());
 
-// Connect to MongoDB
-mongoose
-  .connect(process.env.MONGO_URI || 'mongodb://localhost:27017/Explorely')
-  .then(() => console.log('Connected to MongoDB'))
-  .catch((err) => console.error('MongoDB connection error:', err));
-
-// Define the User Schema
-const userSchema = new mongoose.Schema(
-  {
-    email: { type: String, required: true, unique: true },
-    name: { type: String, required: true },
-    username: { type: String, required: true, unique: true },
-    profilePicture: { type: String }, // URL to the profile picture
-    communities: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Community' }],
-    savedPosts: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Post' }],
-  },
-  { timestamps: true }
-);
-
-// Apply passport-local-mongoose plugin
-userSchema.plugin(passportLocalMongoose);
-
-// Remove sensitive fields when converting to JSON
-userSchema.set('toJSON', {
-  transform: (_, ret) => {
-    delete ret.email;
-    delete ret.salt;
-    delete ret.hash;
-    delete ret.__v;
-  },
+// Rate Limiting to prevent brute-force attacks and abuse
+const apiLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 100, // Limit each IP to 100 requests per windowMs
+  message: {
+    message: "Too many requests from this IP, please try again after 15 minutes."
+  }
 });
 
-// Create User Model
-const User = mongoose.model('User', userSchema);
+// Apply rate limiting to all requests (Uncomment if needed)
+app.use(apiLimiter);
 
-// Define the Community Schema and Model
-const communitySchema = new mongoose.Schema(
-  {
-    title: { type: String, required: true },
-    mantra: { type: String },
-    coverPhoto: { type: String }, // URL to the cover photo
-    users: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
-    posts: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Post' }],
-  },
-  { timestamps: true }
-);
+// ----------------------- Body Parsing Middleware -----------------------
 
-const Community = mongoose.model('Community', communitySchema);
+// Parse incoming JSON requests and put the parsed data in req.body
+app.use(express.json());
 
-// Define the Post Schema and Model
-const postSchema = new mongoose.Schema(
-  {
-    content: { type: String, required: true },
-    community: { type: mongoose.Schema.Types.ObjectId, ref: 'Community', required: true },
-    user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
-    comments: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Comment' }],
-    likedBy: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
-    dislikedBy: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
-  },
-  { timestamps: true }
-);
+// ----------------------- MongoDB Connection -----------------------
 
-const Post = mongoose.model('Post', postSchema);
+// Connect to MongoDB using Mongoose
+mongoose.connect(process.env.MONGO_URI || 'mongodb://localhost:27017/ToDoApp', {
+  useNewUrlParser: true,
+  useUnifiedTopology: true,
+})
+.then(() => console.log('✅ Connected to MongoDB'))
+.catch((err) => {
+  console.error('❌ MongoDB connection error:', err);
+  process.exit(1); // Exit process with failure
+});
 
-// Define the Comment Schema and Model
-const commentSchema = new mongoose.Schema(
-  {
-    content: { type: String, required: true },
-    post: { type: mongoose.Schema.Types.ObjectId, ref: 'Post', required: true },
-    user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
-    parentComment: { type: mongoose.Schema.Types.ObjectId, ref: 'Comment', default: null },
-    replies: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Comment' }],
-    likedBy: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
-    dislikedBy: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
-  },
-  { timestamps: true }
-);
+// ----------------------- Session Management -----------------------
 
-const Comment = mongoose.model('Comment', commentSchema);
-
-// Set up session store
+// Configure MongoDB session store
 const sessionStore = MongoStore.create({
-  mongoUrl: process.env.MONGO_URI || 'mongodb://localhost:27017/Explorely',
+  mongoUrl: process.env.MONGO_URI || 'mongodb://localhost:27017/ToDoApp',
   collectionName: 'sessions',
 });
 
-// Set up session
-app.use(
-  session({
-    secret: process.env.SESSION_SECRET || 'yourSecretKey',
-    resave: false,
-    saveUninitialized: false,
-    store: sessionStore,
-    cookie: {
-      maxAge: 1000 * 60 * 60 * 24, // 1 day
-    },
-  })
-);
+// Configure Express Session Middleware
+app.use(session({
+  secret: process.env.SESSION_SECRET || 'yourSecretKey', // Replace with your own secret
+  resave: false, // Do not save session if unmodified
+  saveUninitialized: false, // Do not create session until something stored
+  store: sessionStore, // Use MongoDB to store session data
+  cookie: {
+    maxAge: 1000 * 60 * 60 * 24, // 1 day in milliseconds
+    httpOnly: true, // Mitigate XSS attacks
+    secure: process.env.NODE_ENV === 'production', // Ensure cookies are sent over HTTPS in production
+    sameSite: 'lax', // CSRF protection
+  },
+}));
 
-// Initialize Passport
+// ----------------------- Passport.js Configuration -----------------------
+
+// Initialize Passport.js
 app.use(passport.initialize());
 app.use(passport.session());
 
-// Configure Passport
-passport.use(User.createStrategy());
+// ----------------------- Define Your Schemas and Models -----------------------
+
+// NOTE: Insert your Mongoose schemas and model definitions here.
+// Example:
+// import mongoose from 'mongoose';
+// const userSchema = new mongoose.Schema({ /* ... */ });
+// const User = mongoose.model('User', userSchema);
+// passport.use(new LocalStrategy(User.authenticate()));
+// passport.serializeUser(User.serializeUser());
+// passport.deserializeUser(User.deserializeUser());
+
+// ----------------------- Authentication Configuration -----------------------
+
+// using passport-local strategy
+const LocalStrategy = passportLocal.Strategy;
+passport.use(new LocalStrategy(User.authenticate()));
+
+// Serialize and deserialize user instances to and from the session
 passport.serializeUser(User.serializeUser());
 passport.deserializeUser(User.deserializeUser());
 
-// Routes
+// ----------------------- Custom Middlewares -----------------------
 
-// Endpoint to check username availability
-app.get('/check-username', async (req, res) => {
-  const { username } = req.query;
-
-  // Validate input length
-  if (!username || username.length < 6) {
-    return res.status(400).json({ message: 'Username must be at least 6 characters long.' });
+// Middleware to check if the user is authenticated
+const isAuthenticated = (req, res, next) => {
+  if (req.isAuthenticated()) {
+    return next();
   }
+  res.status(401).json({ message: 'Unauthorized access. Please log in.' });
+};
 
-  // Check database for existing username
-  const existingUser = await User.findOne({ username });
-  if (existingUser) {
-    return res.status(409).json({ message: 'Username is already taken.' });
-  }
+// ----------------------- Routes -----------------------
 
-  res.status(200).json({ message: 'Username is available.' });
-});
-
-// Endpoint to check email availability
-app.get('/check-email', async (req, res) => {
-  const { email } = req.query;
-
-  // Basic email format validation
-  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-  if (!email || !emailRegex.test(email)) {
-    return res.status(400).json({ message: 'Invalid email format.' });
-  }
-
-  // Check database for existing email
-  const existingEmail = await User.findOne({ email });
-  if (existingEmail) {
-    return res.status(409).json({ message: 'Email is already taken.' });
-  }
-
-  res.status(200).json({ message: 'Email is available.' });
-});
-
-// Register route
+// Registration Route (Asynchronous)
 app.post('/register', async (req, res, next) => {
   const { email, name, username, password } = req.body;
 
   // Check if the email already exists
   const existingEmail = await User.findOne({ email });
   if (existingEmail) {
-    return res.status(400).send({ message: 'Email already registered' });
+    return res.status(400).json({ message: 'Email already registered.' });
   }
 
   // Check if the username already exists
   const existingUsername = await User.findOne({ username });
   if (existingUsername) {
-    return res.status(400).send({ message: 'Username already taken' });
+    return res.status(400).json({ message: 'Username already taken.' });
   }
 
-  // Register the user
+  // Register the new user
   const newUser = new User({ email, name, username });
   const registeredUser = await User.register(newUser, password);
 
-  // Log the user in
+  // Log the user in after registration
   req.login(registeredUser, (err) => {
     if (err) {
+      // Pass error to the global error handler
       return next(err);
     }
-    res.status(201).send({ message: 'Registration successful', user: registeredUser });
+    res.status(201).json({ message: 'Registration successful.', user: registeredUser });
   });
 });
 
-// Login middleware
-const loginMiddleware = (req, res, next) => {
-  // Use passport's authenticate method with the 'local' strategy
-  passport.authenticate('local', (err, user) => {
-    if (err) {
-      return next(err);
-    }
+// Login Route (Asynchronous)
+app.post('/login', passport.authenticate('local'), (req, res) => {
+  res.status(200).json({ message: 'Login successful.', user: req.user });
+});
 
-    if (!user) {
-      return res.status(401).send({ message: 'Invalid username or password' });
-    }
-
-    // Log the user in
-    req.logIn(user, (err) => {
-      if (err) {
-        return next(err);
-      }
-
-      res.status(200).send({ message: 'Login successful', user });
-    });
-  })(req, res, next);
-};
-
-// Login route
-app.post('/login', loginMiddleware);
-
-// Logout route
+// Logout Route (Synchronous)
 app.post('/logout', (req, res, next) => {
-  req.logout((err) => {
-    if (err) {
-      return next(err);
+  req.logout(function(err) {
+    if (err) { 
+      return next(err); 
     }
-    res.status(200).send({ message: 'Logout successful' });
+    res.status(200).json({ message: 'Logout successful.' });
   });
 });
 
-// Protected route
-app.get('/protected', (req, res) => {
-  if (req.isAuthenticated()) {
-    res.status(200).send({ message: 'Welcome to the protected route!' });
-  } else {
-    res.status(401).send({ message: 'Unauthorized access' });
-  }
+// ----------------------- Error Handling Middleware -----------------------
+
+// Handle 404 Errors for undefined routes
+app.use((req, res, next) => {
+  res.status(404).json({ message: 'Resource not found.' });
 });
 
-// Error handling middleware (Express.js 5 automatically handles async errors)
+// Global Error Handling Middleware
 app.use((err, req, res, next) => {
-  console.error(err.stack);
-  res.status(500).send({ message: 'Server Error', error: err.message });
+  console.error('🔴 Error:', err);
+  res.status(err.status || 500).json({
+    message: err.message || 'Internal Server Error',
+    // In development, include stack trace for debugging
+    ...(process.env.NODE_ENV === 'development' && { stack: err.stack }),
+  });
 });
 
-// Start the server
+// ----------------------- Start the Server -----------------------
+
 app.listen(PORT, () => {
-  console.log(`Server is running on port ${PORT}`);
+  console.log(`🚀 Server is running on port ${PORT}`);
 });
